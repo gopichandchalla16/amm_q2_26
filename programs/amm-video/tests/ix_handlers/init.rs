@@ -20,9 +20,11 @@ pub fn create_initialise_ix(
     mint_lp: Pubkey,
     vault_x: Pubkey,
     vault_y: Pubkey,
+    treasury_authority: Pubkey,
+    treasury_x: Pubkey,
+    treasury_y: Pubkey,
 ) -> Instruction {
     let maker = payer.pubkey();
-
     Instruction::new_with_bytes(
         amm_video::id(),
         &amm_video::instruction::Initialize {
@@ -38,6 +40,9 @@ pub fn create_initialise_ix(
             mint_lp,
             vault_x,
             vault_y,
+            treasury_authority,
+            treasury_x,
+            treasury_y,
             config,
             token_program: TOKEN_PROGRAM_ID,
             associated_token_program: ASSOCIATED_TOKEN_PROGRAM_ID,

@@ -25,10 +25,12 @@ fn send(
     svm.send_transaction(tx)
 }
 
-// Setup function to initialize LiteSVM and create a payer keypair
 fn setup() -> (
     LiteSVM,
     Keypair,
+    Pubkey,
+    Pubkey,
+    Pubkey,
     Pubkey,
     Pubkey,
     Pubkey,
@@ -43,14 +45,11 @@ fn setup() -> (
     svm.add_program(program_id, bytes).unwrap();
     svm.airdrop(&payer.pubkey(), 1_000_000_000).unwrap();
 
-    // Create two mints (Mint A and Mint B) with 6 decimal places and the maker as the authority
-    // This done using litesvm-token's CreateMint utility which creates the mint in the LiteSVM environment
     let mint_x = CreateMint::new(&mut svm, &payer)
         .decimals(6)
         .authority(&payer.pubkey())
         .send()
         .unwrap();
-
     let mint_y = CreateMint::new(&mut svm, &payer)
         .decimals(6)
         .authority(&payer.pubkey())
@@ -60,22 +59,56 @@ fn setup() -> (
     let config =
         Pubkey::find_program_address(&[b"config", &123u64.to_le_bytes()], &amm_video::id()).0;
     let mint_lp = Pubkey::find_program_address(&[b"lp", config.as_ref()], &amm_video::id()).0;
+    let treasury_authority =
+        Pubkey::find_program_address(&[b"treasury", config.as_ref()], &amm_video::id()).0;
 
-    // Derive the PDA for the vault associated token account using the config PDA and Mint A
     let vault_x = associated_token::get_associated_token_address(&config, &mint_x);
     let vault_y = associated_token::get_associated_token_address(&config, &mint_y);
+    let treasury_x = associated_token::get_associated_token_address(&treasury_authority, &mint_x);
+    let treasury_y = associated_token::get_associated_token_address(&treasury_authority, &mint_y);
 
     (
-        svm, payer, mint_x, mint_y, config, mint_lp, vault_x, vault_y,
+        svm,
+        payer,
+        mint_x,
+        mint_y,
+        config,
+        mint_lp,
+        vault_x,
+        vault_y,
+        treasury_authority,
+        treasury_x,
+        treasury_y,
     )
 }
 
 #[test]
 fn test_initialize() {
-    let (mut svm, payer, mint_x, mint_y, config, mint_lp, vault_x, vault_y) = setup();
-
+    let (
+        mut svm,
+        payer,
+        mint_x,
+        mint_y,
+        config,
+        mint_lp,
+        vault_x,
+        vault_y,
+        treasury_authority,
+        treasury_x,
+        treasury_y,
+    ) = setup();
     let instruction = create_initialise_ix(
-        &mut svm, &payer, mint_x, mint_y, config, mint_lp, vault_x, vault_y,
+        &mut svm,
+        &payer,
+        mint_x,
+        mint_y,
+        config,
+        mint_lp,
+        vault_x,
+        vault_y,
+        treasury_authority,
+        treasury_x,
+        treasury_y,
     );
     let res = send(&mut svm, &[instruction], &payer, &[&payer]);
     assert!(res.is_ok());
@@ -83,30 +116,70 @@ fn test_initialize() {
 
 #[test]
 pub fn test_deposit() {
-    let (mut svm, payer, mint_x, mint_y, config, mint_lp, vault_x, vault_y) = setup();
+    let (
+        mut svm,
+        payer,
+        mint_x,
+        mint_y,
+        config,
+        mint_lp,
+        vault_x,
+        vault_y,
+        treasury_authority,
+        treasury_x,
+        treasury_y,
+    ) = setup();
     let init_ix = create_initialise_ix(
-        &mut svm, &payer, mint_x, mint_y, config, mint_lp, vault_x, vault_y,
+        &mut svm,
+        &payer,
+        mint_x,
+        mint_y,
+        config,
+        mint_lp,
+        vault_x,
+        vault_y,
+        treasury_authority,
+        treasury_x,
+        treasury_y,
     );
-
     let deposit_ix = create_deposit_ix(
         &mut svm, &payer, mint_x, mint_y, mint_lp, config, vault_x, vault_y,
     );
-
     let res = send(&mut svm, &[init_ix, deposit_ix], &payer, &[&payer]);
     assert!(res.is_ok());
 }
 
 #[test]
 pub fn test_withdraw() {
-    let (mut svm, payer, mint_x, mint_y, config, mint_lp, vault_x, vault_y) = setup();
+    let (
+        mut svm,
+        payer,
+        mint_x,
+        mint_y,
+        config,
+        mint_lp,
+        vault_x,
+        vault_y,
+        treasury_authority,
+        treasury_x,
+        treasury_y,
+    ) = setup();
     let init_ix = create_initialise_ix(
-        &mut svm, &payer, mint_x, mint_y, config, mint_lp, vault_x, vault_y,
+        &mut svm,
+        &payer,
+        mint_x,
+        mint_y,
+        config,
+        mint_lp,
+        vault_x,
+        vault_y,
+        treasury_authority,
+        treasury_x,
+        treasury_y,
     );
-
     let deposit_ix = create_deposit_ix(
         &mut svm, &payer, mint_x, mint_y, mint_lp, config, vault_x, vault_y,
     );
-
     let withdraw_ix = create_withdraw_ix(
         &mut svm, &payer, mint_x, mint_y, mint_lp, config, vault_x, vault_y,
     );
@@ -120,20 +193,154 @@ pub fn test_withdraw() {
 }
 
 #[test]
-pub fn test_swap() {
-    let (mut svm, payer, mint_x, mint_y, config, mint_lp, vault_x, vault_y) = setup();
+pub fn test_swap_x_for_y() {
+    let (
+        mut svm,
+        payer,
+        mint_x,
+        mint_y,
+        config,
+        mint_lp,
+        vault_x,
+        vault_y,
+        treasury_authority,
+        treasury_x,
+        treasury_y,
+    ) = setup();
     let init_ix = create_initialise_ix(
-        &mut svm, &payer, mint_x, mint_y, config, mint_lp, vault_x, vault_y,
+        &mut svm,
+        &payer,
+        mint_x,
+        mint_y,
+        config,
+        mint_lp,
+        vault_x,
+        vault_y,
+        treasury_authority,
+        treasury_x,
+        treasury_y,
     );
-
     let deposit_ix = create_deposit_ix(
         &mut svm, &payer, mint_x, mint_y, mint_lp, config, vault_x, vault_y,
     );
-
     let swap_ix = create_swap_ix(
-        &mut svm, &payer, mint_x, mint_y, mint_lp, config, vault_x, vault_y,
+        &mut svm,
+        &payer,
+        mint_x,
+        mint_y,
+        mint_lp,
+        config,
+        vault_x,
+        vault_y,
+        treasury_authority,
+        treasury_x,
+        treasury_y,
+        true,          // is_x = true (swap X -> Y)
+        10_000_000,
+        5_000_000,
     );
-
     let res = send(&mut svm, &[init_ix, deposit_ix, swap_ix], &payer, &[&payer]);
     assert!(res.is_ok());
+}
+
+#[test]
+pub fn test_swap_y_for_x() {
+    let (
+        mut svm,
+        payer,
+        mint_x,
+        mint_y,
+        config,
+        mint_lp,
+        vault_x,
+        vault_y,
+        treasury_authority,
+        treasury_x,
+        treasury_y,
+    ) = setup();
+    let init_ix = create_initialise_ix(
+        &mut svm,
+        &payer,
+        mint_x,
+        mint_y,
+        config,
+        mint_lp,
+        vault_x,
+        vault_y,
+        treasury_authority,
+        treasury_x,
+        treasury_y,
+    );
+    let deposit_ix = create_deposit_ix(
+        &mut svm, &payer, mint_x, mint_y, mint_lp, config, vault_x, vault_y,
+    );
+    let swap_ix = create_swap_ix(
+        &mut svm,
+        &payer,
+        mint_x,
+        mint_y,
+        mint_lp,
+        config,
+        vault_x,
+        vault_y,
+        treasury_authority,
+        treasury_x,
+        treasury_y,
+        false,         // is_x = false (swap Y -> X)
+        10_000_000,
+        5_000_000,
+    );
+    let res = send(&mut svm, &[init_ix, deposit_ix, swap_ix], &payer, &[&payer]);
+    assert!(res.is_ok());
+}
+
+#[test]
+fn test_swap_rejects_zero_amount() {
+    let (
+        mut svm,
+        payer,
+        mint_x,
+        mint_y,
+        config,
+        mint_lp,
+        vault_x,
+        vault_y,
+        treasury_authority,
+        treasury_x,
+        treasury_y,
+    ) = setup();
+    let init_ix = create_initialise_ix(
+        &mut svm,
+        &payer,
+        mint_x,
+        mint_y,
+        config,
+        mint_lp,
+        vault_x,
+        vault_y,
+        treasury_authority,
+        treasury_x,
+        treasury_y,
+    );
+    let deposit_ix = create_deposit_ix(
+        &mut svm, &payer, mint_x, mint_y, mint_lp, config, vault_x, vault_y,
+    );
+    let swap_ix = create_swap_ix(
+        &mut svm,
+        &payer,
+        mint_x,
+        mint_y,
+        mint_lp,
+        config,
+        vault_x,
+        vault_y,
+        treasury_authority,
+        treasury_x,
+        treasury_y,
+        true,
+        0,             // zero amount should fail
+        0,
+    );
+    let res = send(&mut svm, &[init_ix, deposit_ix, swap_ix], &payer, &[&payer]);
+    assert!(res.is_err());
 }

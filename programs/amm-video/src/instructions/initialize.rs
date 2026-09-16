@@ -16,7 +16,7 @@ pub struct Initialize<'info> {
     #[account(
         init,
         payer = initializer,
-        seeds = [b"lp", config.key.as_ref()],
+        seeds = [b"lp", config.key().as_ref()],
         bump,
         mint::decimals = 6,
         mint::authority = config,
@@ -36,6 +36,26 @@ pub struct Initialize<'info> {
         associated_token::authority = config,
     )]
     pub vault_y: Account<'info, TokenAccount>,
+    /// CHECK: treasury authority PDA
+    #[account(
+        seeds = [b"treasury", config.key().as_ref()],
+        bump,
+    )]
+    pub treasury_authority: UncheckedAccount<'info>,
+    #[account(
+        init,
+        payer = initializer,
+        associated_token::mint = mint_x,
+        associated_token::authority = treasury_authority,
+    )]
+    pub treasury_x: Account<'info, TokenAccount>,
+    #[account(
+        init,
+        payer = initializer,
+        associated_token::mint = mint_y,
+        associated_token::authority = treasury_authority,
+    )]
+    pub treasury_y: Account<'info, TokenAccount>,
     #[account(
         init,
         payer = initializer,
@@ -67,7 +87,6 @@ impl<'info> Initialize<'info> {
             config_bump: bumps.config,
             lp_bump: bumps.mint_lp,
         });
-
         Ok(())
     }
 }
