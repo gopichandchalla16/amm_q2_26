@@ -1,66 +1,132 @@
 # Turbin3 Q3 2026 - Week 3 Assignment: Automated Market Maker (AMM)
 
-Implementation of the Turbin3 Builders Week 3 Assignment (AMMs) on Solana using the Anchor framework.
+Solana Anchor implementation of a Constant Product Automated Market Maker (`X * Y = K`) for the Turbin3 Builders Cohort Week 3 assignment.
 
-This repository implements a Constant Product Automated Market Maker (`X * Y = K`). It supports liquidity provision, token swaps with slippage protection, protocol fee collection into a dedicated Treasury (PDA), and a LiteSVM test suite covering all instructions.
+The program supports pool creation, liquidity provision, liquidity withdrawal, token swaps with slippage protection, and protocol fee routing into a dedicated Treasury PDA.
 
-## Architecture and Account Structure
+**Author:** Gopichand  
+**Cohort:** Turbin3 Builders Cohort Q3 2026  
+**Program:** `amm-video`
 
-The program uses PDAs to hold funds and enforce permissions.
+## What this repository contains
 
-**Config (PDA)**  
-`seeds = [b"config", seed.to_le_bytes()]`
+This submission covers the three required tasks:
 
-Stores:
-- `mint_x`, `mint_y`
-- `fee` (basis points)
-- `locked`
-- `authority`
-- `config_bump`, `lp_bump`
+1. Full AMM program with `initialize`, `deposit`, `withdraw`, and `swap`
+2. Configurable swap fee plus treasury accounts owned by a PDA
+3. LiteSVM tests covering every instruction and one negative case
 
-**Other accounts**
-- `mint_lp` – LP token mint, authority is the config PDA  
-  `seeds = [b"lp", config]`
-- `vault_x` / `vault_y` – pool reserves (ATAs owned by config)
-- `treasury_authority` – PDA  
-  `seeds = [b"treasury", config]`
-- `treasury_x` / `treasury_y` – protocol fee accounts (ATAs owned by treasury_authority)
+Optional extension items (CPMM without the library, downtime mitigation write-up) were not required for this submission.
+
+## Architecture
+
+The program is stateless. All mutable state lives in accounts. PDAs are used both for custody and for signing.
+
+### Config PDA
+
+```
+seeds = [b"config", seed.to_le_bytes()]
+```
+
+Fields stored on Config:
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `seed` | `u64` | Allows multiple independent pools for the same token pair |
+| `authority` | `Option<Pubkey>` | Optional admin key |
+| `mint_x` | `Pubkey` | Token X mint |
+| `mint_y` | `Pubkey` | Token Y mint |
+| `fee` | `u16` | Swap fee in basis points (30 = 0.30%) |
+| `locked` | `bool` | Emergency pause flag |
+| `config_bump` | `u8` | Canonical bump for Config |
+| `lp_bump` | `u8` | Canonical bump for LP mint |
+
+### Other accounts
+
+| Account | Ownership / Seeds | Role |
+|---------|-------------------|------|
+| `mint_lp` | PDA `["lp", config]` | LP token mint, mint authority is Config |
+| `vault_x` | ATA of Config for mint_x | Pool reserve for token X |
+| `vault_y` | ATA of Config for mint_y | Pool reserve for token Y |
+| `treasury_authority` | PDA `["treasury", config]` | Authority over treasury token accounts |
+| `treasury_x` | ATA of treasury_authority for mint_x | Protocol fee account for token X |
+| `treasury_y` | ATA of treasury_authority for mint_y | Protocol fee account for token Y |
 
 ## Instructions
 
-### 1. initialize
-Creates the Config PDA, LP mint, vault ATAs, and treasury ATAs. Sets the fee and optional authority.
+### initialize
 
-### 2. deposit
-User deposits token X and token Y. The program mints LP tokens proportional to the contribution. First deposit sets the initial ratio using the amounts supplied by the user. Later deposits use the constant product curve to keep the pool balanced.
+Creates the full pool surface in one transaction:
 
-### 3. withdraw
-User burns LP tokens and receives the proportional share of token X and token Y from the vaults. Minimum output amounts protect against slippage.
+- Config PDA
+- LP mint (6 decimals, authority = Config)
+- `vault_x` and `vault_y`
+- `treasury_authority` PDA
+- `treasury_x` and `treasury_y`
 
-### 4. swap
-User swaps one token for the other using the constant product curve. The fee is applied during the swap calculation. A portion of the fee is transferred from the relevant vault into the matching treasury token account. Slippage is protected with `min_amount_out`. Zero amount swaps are rejected.
+Parameters: `seed`, `fee`, optional `authority`.
 
-## Fee and Treasury Design
+### deposit
 
-- Fee is stored on Config in basis points (example: 30 = 0.30%)
-- On every swap a portion of the fee is moved from the vault into the treasury
-- Treasury accounts are owned by a PDA so fee handling stays under program control
-- Protocol fees are kept separate from the liquidity that belongs to LPs
+Adds liquidity and mints LP tokens.
 
-## Tests (LiteSVM)
+- First deposit uses the exact `max_x` / `max_y` amounts supplied by the user and sets the initial price ratio
+- Later deposits use the constant product curve (`xy_deposit_amounts_from_l`) so the user must deposit in the current pool ratio
+- Slippage is enforced with `max_x` and `max_y`
+- Pool must not be locked
+
+### withdraw
+
+Burns LP tokens and returns the proportional share of both reserves.
+
+- Amounts are computed with `xy_withdraw_amounts_from_l`
+- User sets `min_x` and `min_y` for slippage protection
+- Pool must not be locked
+
+### swap
+
+Swaps one token for the other.
+
+Flow:
+
+1. Build the constant product curve from current vault balances, LP supply, and fee
+2. Compute deposit and withdraw amounts with slippage check (`min_amount_out`)
+3. Transfer input tokens from user into the matching vault
+4. Transfer output tokens from the other vault to the user
+5. Calculate fee portion and move it from the input vault into the matching treasury account
+
+Fee routing detail:
+
+- Fee is read from Config (basis points)
+- Half of the computed fee amount is sent to treasury (`fee_amount / 2`)
+- Transfer is signed by the Config PDA
+
+Zero amount swaps are rejected with `AmmError::InvalidAmount`. Locked pools reject swaps with `AmmError::PoolLocked`.
+
+## Fee and Treasury design
+
+- Fee is set once at `initialize` and stored on Config
+- The curve library applies the fee inside the swap math so LPs still capture part of the spread
+- An additional portion is explicitly transferred into `treasury_x` or `treasury_y`
+- Treasury token accounts are owned by `treasury_authority` (PDA), not by a normal wallet
+- This separates protocol revenue from LP-owned reserves
+
+## Tests
+
+All tests run against the compiled SBF binary using LiteSVM (no external validator).
 
 ```bash
 cargo test --test tests -- --nocapture
 ```
 
-| Test | What it verifies |
-|------|------------------|
-| `test_initialize` | Config, vaults, treasury and LP mint are created correctly |
-| `test_deposit` | Liquidity can be added and LP tokens are minted |
-| `test_withdraw` | LP tokens can be burned and underlying tokens are returned |
-| `test_swap_x_for_y` | Swap from X to Y works and fee path is exercised |
-| `test_swap_y_for_x` | Swap from Y to X works |
-| `test_swap_rejects_zero_amount` | Zero amount swap is rejected |
+| Test | Coverage |
+|------|----------|
+| `test_initialize` | Config, LP mint, vaults, and treasury accounts are created |
+| `test_deposit` | Liquidity addition and LP minting after initialize |
+| `test_withdraw` | LP burn and proportional redemption after deposit |
+| `test_swap_x_for_y` | Swap direction X → Y including fee path |
+| `test_swap_y_for_x` | Swap direction Y → X |
+| `test_swap_rejects_zero_amount` | Zero input is rejected |
 
 ## Build
 
@@ -74,10 +140,10 @@ anchor build
 
 ## Notes
 
-- Curve math uses the `constant_product_curve` library
-- Treasury is intentionally separated from the pool vaults
-- Tests cover the main path for every instruction plus a negative case for zero amount
+- Curve math is provided by the `constant_product_curve` crate
+- All vault and treasury transfers that move pool funds are signed with Config PDA seeds
+- Tests cover every required instruction and one failure path
+- This repository satisfies the Week 3 mandatory requirements: AMM program, fees + treasury, and tests with screenshot
 
 Gopichand  
 Turbin3 Builders Cohort Q3 2026
-```
